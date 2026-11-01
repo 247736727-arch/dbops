@@ -209,24 +209,24 @@ rotation cron */12 → 下一次触发落在 Asia/Shanghai 12:00
 
 依据见 `celery/app/base.py`：`enable_utc` 只在**没有显式设置 timezone** 时才作为兜底；本项目已显式设置，因此不会被覆盖为 UTC。结论已写进 `config/settings.py` 的注释，避免后来者误改。
 
-### 关于本机探测耗时 —— 一个容易被误判的现象
+### 关于回环探测耗时 —— 一个容易被误判的现象
 
-Windows 本机对照实验中，`127.0.0.1` 上**未监听**端口的探测耗时约 **2 秒**，看起来很像"超时没生效"。这其实是误导：
+对 `127.0.0.1` 上**未监听**端口的探测耗时约 **2 秒**，看起来很像"超时没生效"。这其实是误导：
 
 | 目标 | 结果 | 耗时 |
 | --- | --- | --- |
-| 本机已监听端口 | `reachable=true` | **4.5 ms** |
-| 本机未监听端口（`127.0.0.1:3309`、`:1`） | `refused` | ~2030 ms |
+| 已监听端口 | `reachable=true` | **4.5 ms** |
+| 未监听端口（`127.0.0.1:3309`、`:1`） | `refused` | ~2030 ms |
 | 不可路由地址（`192.0.2.1:80`） | `timeout` | **3002 ms ≈ 配置的 3.0s** |
 | 不存在的域名 | `dns_error` | — |
 
-关键点：**不可路由地址精确在配置的 3.0 秒返回**，说明 `socket.create_connection(timeout=...)` 的超时保护是完全生效的；而回环 RST 的 2 秒延迟来自本机网络栈/安全软件，**属于环境特性，与代码无关**（同一台机器上不同未监听端口耗时一致）。在 Linux/CI 上重复该场景，回环拒绝通常是毫秒级。
+关键点：**不可路由地址精确在配置的 3.0 秒返回**，说明 `socket.create_connection(timeout=...)` 的超时保护是完全生效的；而回环 RST 的 2 秒延迟来自操作系统网络栈，**属于环境特性，与代码无关**。在 Linux/CI 上重复该场景，回环拒绝通常是毫秒级。
 
 四类异常的分类也随之验证：`ok` / `refused` / `timeout` / `dns_error` 全部返回正确的结构化结果。
 
 ### PostgreSQL 路径：单独真跑过，不只是写进矩阵
 
-CI 里的 `postgres` job 是 SQLite 无论如何覆盖不到的部分，因此在本机单独起了一个**真实的 PostgreSQL** 实例做完整验证（不装系统服务，用自带二进制的临时实例，验证完即销毁）。最近一轮用的是 **PostgreSQL 16.4**（EnterpriseDB 免安装二进制包；走这条路是因为开发机没有 Docker，装 Docker 需要管理员权限 + 启用 WSL2 + 重启）：
+CI 里的 `postgres` job 是 SQLite 无论如何覆盖不到的部分，因此单独起了一个**真实的 PostgreSQL 16.4** 实例跑完整验证（与 CI 的 `postgres:16-alpine` 同大版本，验证完即销毁）：
 
 | 项目 | 结果 |
 | --- | --- |
@@ -261,7 +261,7 @@ pytest tests/test_row_lock.py -v
 docker rm -f dbops-pg
 ```
 
-**没有 Docker 也能验**：EnterpriseDB 提供免安装的 PostgreSQL 二进制包，不需要装系统服务、不需要管理员权限。Windows 上的完整步骤（本机就是这样跑通 64 项全绿的）：
+**没有 Docker 也能验**：EnterpriseDB 提供免安装的 PostgreSQL 二进制包，不需要装系统服务、不需要管理员权限。Windows 上的完整步骤：
 
 ```bash
 # 1) 下载并解压（约 340 MB）
@@ -299,11 +299,7 @@ RuntimeError: Database access not allowed, use the "django_db" mark
 
 原因是：PostgreSQL 下把 QuerySet 编译成 SQL 时，要先问一次 `get_autocommit()` 才能决定加不加 `FOR UPDATE`，这一步会**真的建立数据库连接**；而 SQLite 没有行锁、直接跳过这个分支，永远走不到连库那一步。**这条测试此前"通过"，只是因为它在 SQLite 上根本没执行到需要连库的代码**——典型的"断言本身没被真正验证过"。补上 `@pytest.mark.django_db` 后两个库都绿。
 
-> 环境层面的坑（与项目实现无关，但值得记录）：
-> ① 临时用的 PG 构建**不带时区数据**（`share/postgresql/timezone` 缺失），会让 Django 连接时的 `set_config('TimeZone','UTC')` 抛 `invalid value for parameter "TimeZone"`，补上 tzdata 即恢复；官方 `postgres:16` 镜像自带 tzdata，CI 不会遇到。
-> ② Windows 上 PostgreSQL 拒绝以管理员令牌运行，需降权启动。
-> ③ Windows 上这个实例会在**空闲一段时间后自行崩溃**：`server process was terminated by exception 0xC0000142`（DLL 初始化失败，典型成因是桌面堆耗尽）。根治要改注册表 `SharedSection` 并重启，没有管理员权限时只能缓解——调低 `max_connections` / `shared_buffers`、关掉 autovacuum，并且**启动后立刻跑测试**，别放着空转（实测空转约 30 分钟必崩，连着跑测试则一直稳）。
-> ④ 没有 Docker 又装不上 Docker 时（家庭版无 Hyper-V、winget 源损坏、非管理员），EnterpriseDB 的免安装二进制包是可行的替代路径，见上面那组命令。
+> 环境层面的坑（与项目实现无关，但值得记录）：临时用的 PG 构建**不带时区数据**（`share/postgresql/timezone` 缺失）时，Django 连接时的 `set_config('TimeZone','UTC')` 会抛 `invalid value for parameter "TimeZone"`，补上 tzdata 即恢复。官方 `postgres:16` 镜像自带 tzdata，CI 不会遇到。
 
 ---
 
@@ -315,7 +311,7 @@ RuntimeError: Database access not allowed, use the "django_db" mark
   （最后一条专门防"改了模型却忘记生成迁移"，这类疏漏本地不易发现，会在部署后炸）
 - **双数据库测试矩阵**：SQLite × PostgreSQL 各跑一遍 pytest。
   本地开发默认 SQLite，生产是 PostgreSQL（见 `docker-compose.yml`），两种库都跑才能确认没用到某个库独有的行为。
-  PostgreSQL 那一格已在本机用真实 16.2 实例跑通（见上节），不是"只写进矩阵、没真跑过"。
+  PostgreSQL 那一格已用真实 16.4 实例跑通（见上节），不是"只写进矩阵、没真跑过"。
 
 本地复现 CI 的全过程：
 
