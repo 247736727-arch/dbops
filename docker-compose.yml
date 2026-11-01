@@ -1,0 +1,96 @@
+# 一条命令起全套：postgres + redis + web + celery worker + celery beat
+#
+#   docker compose up --build
+#   docker compose run --rm web python manage.py migrate
+#   docker compose run --rm web python manage.py seed_demo
+#
+# 关键：**beat 必须是独立且唯一的进程**。
+# 不要用 `celery worker -B`（内嵌 beat）——一旦 web/worker 扩容到多副本，
+# 定时任务就会被触发多次，密码轮换和统计都会重复执行。
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dbops
+      POSTGRES_USER: dbops
+      POSTGRES_PASSWORD: dbops
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbops -d dbops"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    restart: unless-stopped
+    command: >-
+      gunicorn config.wsgi:application
+      --bind 0.0.0.0:8000
+      --workers 2
+      --timeout 30
+      --access-logfile -
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://dbops:dbops@db:5432/dbops
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    ports:
+      - "8000:8000"
+    volumes:
+      - static_files:/app/staticfiles
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    # 并发小而确定：轮换/统计都是短任务，重点是稳定而不是吞吐
+    command: celery -A config worker --loglevel=INFO --concurrency=2
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://dbops:dbops@db:5432/dbops
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    restart: unless-stopped
+    # 调度器状态落在卷里，避免容器重启后重复触发刚跑过的任务
+    command: celery -A config beat --loglevel=INFO --schedule=/tmp/celerybeat-schedule
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://dbops:dbops@db:5432/dbops
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  static_files:
