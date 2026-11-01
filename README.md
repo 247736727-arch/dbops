@@ -64,7 +64,7 @@ curl -H "Authorization: Token <token>" http://127.0.0.1:8000/api/instances/
 | --- | --- | --- | --- |
 | 1 | 多表模型 + 外键 | `apps/inventory/models.py` | 部门 ⊃ 集群 ⊃ 实例三层；按语义区分 `PROTECT` / `CASCADE`；`host+port` 唯一约束 |
 | 2 | CRUD + TCP 探测 | `apps/inventory/services.py`、`views.py` | **必带 timeout**；异常分类（超时/拒绝/DNS/不可达）；结果落 `ProbeLog` |
-| 3 | 周期任务 + 加密 `apps/core/crypto.py`、`fields.py`、`apps/inventory/tasks.py` | | **Fernet 可逆加密**（非哈希）；`secrets` 生成；幂等 + 逐实例故障隔离 + 审计留痕 |
+| 3 | 周期任务 + 加密 | `apps/core/crypto.py`、`fields.py`、`apps/inventory/tasks.py` | **Fernet 可逆加密**（非哈希）；`secrets` 生成；幂等 + 逐实例故障隔离 + 审计留痕 |
 | 4 | 每日 00:00 统计入库 | `apps/stats/models.py`、`tasks.py` | 数据库侧聚合；补零；**唯一约束 + upsert 保幂等**；`CELERY_TIMEZONE` |
 | 5 | 请求耗时中间件 | `apps/core/middleware.py` | `perf_counter()`；**`try/finally` 保证 500 也统计**；不写库，走结构化日志 |
 
@@ -159,7 +159,7 @@ Department 1 ── n Cluster 1 ── n DBInstance
 ## 五、测试
 
 ```bash
-pytest                                             # 61 项，全部通过
+pytest                                             # 63 项：62 passed + 1 skipped（行锁断言需 PostgreSQL）
 ruff check .                                       # All checks passed
 python manage.py check                             # System check identified no issues
 python manage.py makemigrations --check --dry-run  # No changes detected
@@ -231,7 +231,7 @@ CI 里的 `postgres` job 是 SQLite 无论如何覆盖不到的部分，因此�
 | --- | --- |
 | 服务端版本 | PostgreSQL 16.2（与 CI 的 `postgres:16-alpine` 同大版本） |
 | `manage.py migrate` | 全部 OK（含 `inventory.0001_initial`、`stats.0001_initial`） |
-| `pytest` | **61 passed**（5.40s） |
+| `pytest` | **61 passed**（5.40s，当时的用例数；现为 63 项） |
 | `manage.py check` | 0 issues |
 | `makemigrations --check --dry-run` | No changes detected |
 
@@ -243,6 +243,25 @@ CI 里的 `postgres` job 是 SQLite 无论如何覆盖不到的部分，因此�
 | 第二个事务 `select_for_update(nowait=True)` | `OperationalError: could not obtain lock on row`（112 ms 内失败） | 立刻拿到锁（3.4 ms），**没有任何互斥** |
 
 结论：第 3 题的并发幂等保护（行锁 + `password_rotated_at` 判断）**只有在 PostgreSQL 上才真正生效**。本地用 SQLite 并行跑两个 worker 时这层保护形同虚设——但那是 SQLite 的能力边界，不是实现缺陷；生产用 PostgreSQL，保护真实存在，且并发冲突会立刻报错而不是静默双写。
+
+**上面这张表不是只读文档得来的，是可复现的**，见 `tests/test_row_lock.py`：
+
+```bash
+# 1) 本地默认 SQLite：验证「生成的 SQL 里没有 FOR UPDATE」，行锁断言会 skip
+pytest tests/test_row_lock.py -v
+
+# 2) 切到 PostgreSQL 再跑一遍，第 2 条断言才会真正执行（起一个一次性 PG）
+docker run -d --name dbops-pg -e POSTGRES_DB=dbops -e POSTGRES_USER=dbops \
+  -e POSTGRES_PASSWORD=dbops -p 5432:5432 postgres:16-alpine
+export DATABASE_URL=postgres://dbops:dbops@127.0.0.1:5432/dbops
+python manage.py migrate
+pytest tests/test_row_lock.py -v
+docker rm -f dbops-pg
+```
+
+CI 的双数据库矩阵会自动覆盖这两格：SQLite 格跑出 1 skipped，PostgreSQL 格跑满全部断言。
+
+**同一类差异还有一处，已修掉**：批量任务按 `password_rotated_at` 升序挑实例（NULL = 从未轮换，最该先处理），而 **NULL 的默认排序在两种库上相反**——PostgreSQL 是 NULLS LAST，SQLite 是 NULLS FIRST。不显式声明的话，同一份代码在两种库上会挑出不同的实例，只在实例数超过 `ROTATION_BATCH_SIZE`、批次被截断时才暴露。现在显式写成 `F("password_rotated_at").asc(nulls_first=True)`（`apps/inventory/tasks.py`），并由 `test_never_rotated_instance_is_processed_first` 锁住。两种后端编译出的 SQL 均已确认带 `NULLS FIRST`。
 
 > 过程中的两个坑（与项目实现无关，但值得记录）：① 临时用的 PG 构建**不带时区数据**（`share/postgresql/timezone` 缺失），会让 Django 连接时的 `set_config('TimeZone','UTC')` 抛 `invalid value for parameter "TimeZone"`，补上 tzdata 即恢复；官方 `postgres:16` 镜像自带 tzdata，CI 不会遇到。② Windows 上 PostgreSQL 拒绝以管理员令牌运行，需降权启动。
 
@@ -306,8 +325,8 @@ dbops/
 │   └── stats/                    # ★ 第 4 题
 │       ├── models.py             # InstanceStat（唯一约束）
 │       ├── tasks.py              # 聚合 + upsert
-│       └── serializers.py / views.py / urls.py
-├── tests/                        # 61 项测试（按考点分文件）
+│       └── serializers.py / views.py / urls.py / admin.py
+├── tests/                        # 63 项测试（按考点分文件，含 test_row_lock.py）
 ├── docker-compose.yml            # 5 个服务（web / worker / beat / db / redis）
 ├── .github/workflows/ci.yml      # ruff + check + migrations + 双数据库 pytest
 ├── Dockerfile / requirements*.txt / pytest.ini / pyproject.toml

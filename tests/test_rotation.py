@@ -1,4 +1,4 @@
-"""第 3 题：每 12 小时轮换密码的任务——重点验证幂等与故障隔离。"""
+"""密码轮换任务测试——重点验证幂等与故障隔离。"""
 
 from __future__ import annotations
 
@@ -152,6 +152,21 @@ class TestBatchIdempotency:
         assert PasswordRotationLog.objects.get().instance_id == oldest.pk
         due_instance.refresh_from_db()
         assert due_instance.password_rotated_at is not None  # 本次未处理，保持原样
+
+    def test_never_rotated_instance_is_processed_first(self, department):
+        """排序回归：NULL（从未轮换过）必须排在最前，不能依赖各库的默认行为。
+
+        PostgreSQL 默认把 NULL 排在最后、SQLite 排在最前。不显式声明 nulls_first
+        的话，同一份代码在两种库上会挑出不同的实例——只在批次被截断时才会暴露。
+        """
+        never = _make_instance(department, name="db-never", port=3392, rotated_hours_ago=13)
+        DBInstance.objects.filter(pk=never.pk).update(password_rotated_at=None)
+        _make_instance(department, name="db-old", port=3393, rotated_hours_ago=500)
+
+        summary = rotate_all_instance_passwords(force=True, batch_size=1)
+
+        assert summary["candidates"] == 1
+        assert PasswordRotationLog.objects.get().instance_id == never.pk
 
 
 class TestFaultIsolation:

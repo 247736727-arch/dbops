@@ -1,18 +1,14 @@
-"""第 3 题：每 12 小时随机轮换实例密码。
+"""每 12 小时随机轮换实例密码。
 
-这道题真正被考察的不是「会不会用 celery」，而是三个线上必须成立的性质：
+批量任务必须成立的三条性质：
 
-1. **幂等**：任务可能被重试、被 beat 重复投递、被人工补跑。
-   如果只按"到点就换"，同一实例会在几分钟内被换两次密码，
-   而应用侧缓存的是上一次的值 → 直接连不上库。
-   这里用 `password_rotated_at + 周期` 做窗口判断，重复执行只会跳过。
+1. **幂等**：任务可能被重试、重复投递、人工补跑。只按「到点就换」会让同一实例在
+   几分钟内被换两次密码，而应用侧缓存的是上一次的值 → 直接连不上库。这里用
+   `password_rotated_at + 周期` 做窗口判断，重复执行只会跳过。
+2. **故障隔离**：逐实例 try/except，每个实例单独开事务、单独写审计，一个失败不中断整批。
+3. **可审计**：谁、什么时候、成功了没有，都要留痕（PasswordRotationLog）。
 
-2. **故障隔离**：批量任务里一个实例失败不能中断整批。
-   这里逐实例 try/except，并为每个实例单独开事务、单独写审计记录。
-
-3. **可审计**：谁、什么时候、成功了没有，必须留痕（PasswordRotationLog）。
-
-批次上限（ROTATION_BATCH_SIZE）是为了避免几万个实例一次性打满数据库。
+批次上限 ROTATION_BATCH_SIZE 用于避免几万个实例一次性打满数据库。
 """
 
 from __future__ import annotations
@@ -24,7 +20,7 @@ from datetime import timedelta
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.inventory.models import DBInstance, PasswordRotationLog
@@ -76,9 +72,8 @@ def rotate_instance_password(instance_id: int, *, force: bool = False, trigger: 
                 "updated_at",
             ]
         )
-        # 首次设置密码的实例没有"上一版密码"，也就没有过渡期到期时间。
-        # 直接对 None 做 :%Y-%m-%d 格式化会抛 TypeError，进而被外层判定为轮换取证失败
-        # ——真实后果是：新建但尚未录入密码的实例会让任务在每次调度里都失败。
+        # 首次设置密码时 previous_password_expires_at 为 None，直接格式化会抛
+        # TypeError，会让这类实例在每次调度里都被判成轮换失败
         expires_at = instance.previous_password_expires_at
         expires_text = expires_at.strftime("%Y-%m-%d %H:%M:%S") if expires_at else "无（首次设置）"
 
@@ -108,7 +103,14 @@ def rotate_all_instance_passwords(
         candidates = candidates.filter(
             Q(password_rotated_at__isnull=True) | Q(password_rotated_at__lte=cutoff)
         )
-    instance_ids = list(candidates.order_by("password_rotated_at", "id").values_list("id", flat=True)[:limit])
+    # NULL 表示「从未轮换过」，按语义是最久没轮换的，必须排最前。但 NULL 的默认
+    # 排序各库不一致：PostgreSQL 是 NULLS LAST，SQLite/MySQL 是 NULLS FIRST——
+    # 不显式声明的话，同一份代码在两种库上会挑出不同的实例，batch_size 截断时尤其明显
+    instance_ids = list(
+        candidates.order_by(F("password_rotated_at").asc(nulls_first=True), "id").values_list(
+            "id", flat=True
+        )[:limit]
+    )
 
     rotated = skipped = failed = 0
     errors: list[dict] = []
