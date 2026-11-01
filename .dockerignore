@@ -1,0 +1,14 @@
+.venv/
+venv/
+.git/
+.github/
+.idea/
+.vscode/
+.pytest_cache/
+**/__pycache__/
+*.pyc
+db.sqlite3
+celerybeat-schedule*
+staticfiles/
+.env
+tests/

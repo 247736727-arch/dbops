@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支上的连续推送只保留最新一次运行：省 CI 时长，也避免旧结果干扰判断
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  # 测试专用 settings：自带一次性 Fernet 密钥、MD5 密码哈希、更短的探测超时。
+  # 为什么不直接用 config.settings：那套配置要求「非 DEBUG 必须显式提供
+  # FIELD_ENCRYPTION_KEYS」，而 Django 测试运行器会强制 DEBUG=False，两者冲突。
+  DJANGO_SETTINGS_MODULE: config.settings_test
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  lint:
+    name: 静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: ruff 代码检查
+        run: ruff check .
+
+      - name: Django 系统自检
+        run: python manage.py check
+
+      # 专门防「改了模型却忘记生成迁移」——这类疏漏本地难以发现，会在部署后炸
+      - name: 迁移文件是否与模型一致
+        run: python manage.py makemigrations --check --dry-run
+
+  test:
+    name: 测试 · ${{ matrix.database }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 本地开发默认 SQLite，生产是 PostgreSQL（见 docker-compose.yml）。
+        # 两种库各跑一遍，才能确认没有用到某个数据库独有的行为。
+        database: ["sqlite", "postgres"]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: dbops
+          POSTGRES_USER: dbops
+          POSTGRES_PASSWORD: dbops
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U dbops -d dbops"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # 分两步写而不是用三元表达式拼 DATABASE_URL：
+      # 空字符串可能被 django-environ 当成「配了但格式不对」而解析失败，
+      # 拆开更直白，也不会出现隐晦的空值问题。
+      - name: 运行测试（SQLite）
+        if: matrix.database == 'sqlite'
+        run: pytest
+
+      - name: 运行测试（PostgreSQL）
+        if: matrix.database == 'postgres'
+        run: pytest
+        env:
+          DATABASE_URL: postgres://dbops:dbops@localhost:5432/dbops

@@ -1,0 +1,9 @@
+# 开发/测试依赖：在 requirements.txt 之后安装
+-r requirements.txt
+
+pytest==9.2.0
+pytest-django==4.14.0
+
+# 代码检查。锁版本是为了让本地、CI、同事机器跑出完全一致的结果，
+# 否则 ruff 升级引入新规则会导致「同一份代码在不同人机器上飘红」。
+ruff==0.17.3

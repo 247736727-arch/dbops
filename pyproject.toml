@@ -1,0 +1,40 @@
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+exclude = [
+    ".venv",
+    "staticfiles",
+    "**/migrations/**",  # 自动生成的代码，不应被 lint 规则约束
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle 错误
+    "W",    # pycodestyle 警告
+    "F",    # pyflakes（未使用变量/导入、重复定义）
+    "I",    # import 排序
+    "B",    # bugbear（可变默认参数、重复 key 等）
+    "C4",   # 列表/字典推导简化
+    "UP",   # 现代 Python 写法
+    "SIM",  # 重复分支/嵌套简化
+    "RUF",  # ruff 自带规则（含无用 with、日志 f-string 等）
+]
+ignore = [
+    "UP041",  # socket.timeout 比 TimeoutError 更能表达"网络调用超时"的语义，保留
+    "RUF012", # 模型字段定义本身就是类属性，标注 ClassVar 反而失真
+    # 下面三条是「CJK 字符被判定为易混淆字符」的检查。本项目注释、文档字符串、
+    # 以及对外报错文案都是中文，开启等于让整个代码库无法通过检查，故关闭。
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["SIM117"]  # pytest.raises + transaction.atomic 拆开写可读性更好
+# settings 拆分的惯例就是星号继承，这里的 F403 无法避免也没有风险
+"config/settings_test.py" = ["F403"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings_test"
+addopts = "-ra -q"
+testpaths = ["tests"]
