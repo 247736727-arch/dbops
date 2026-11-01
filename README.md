@@ -159,7 +159,8 @@ Department 1 ── n Cluster 1 ── n DBInstance
 ## 五、测试
 
 ```bash
-pytest                                             # 63 项：62 passed + 1 skipped（行锁断言需 PostgreSQL）
+pytest                                             # SQLite：63 项 = 62 passed + 1 skipped（行锁断言需 PostgreSQL）
+                                                   # PostgreSQL：64 项全 passed，0 skipped（已真机验证）
 ruff check .                                       # All checks passed
 python manage.py check                             # System check identified no issues
 python manage.py makemigrations --check --dry-run  # No changes detected
@@ -225,13 +226,14 @@ Windows 本机对照实验中，`127.0.0.1` 上**未监听**端口的探测耗�
 
 ### PostgreSQL 路径：单独真跑过，不只是写进矩阵
 
-CI 里的 `postgres` job 是 SQLite 无论如何覆盖不到的部分，因此在本机单独起了一个**真实的 PostgreSQL 16.2** 实例做完整验证（不装系统服务，用自带二进制的临时实例，验证完即销毁）：
+CI 里的 `postgres` job 是 SQLite 无论如何覆盖不到的部分，因此在本机单独起了一个**真实的 PostgreSQL** 实例做完整验证（不装系统服务，用自带二进制的临时实例，验证完即销毁）。最近一轮用的是 **PostgreSQL 16.4**（EnterpriseDB 免安装二进制包；走这条路是因为开发机没有 Docker，装 Docker 需要管理员权限 + 启用 WSL2 + 重启）：
 
 | 项目 | 结果 |
 | --- | --- |
-| 服务端版本 | PostgreSQL 16.2（与 CI 的 `postgres:16-alpine` 同大版本） |
+| 服务端版本 | PostgreSQL 16.4（与 CI 的 `postgres:16-alpine` 同大版本） |
+| `pytest` 全量 | **64 passed / 0 skipped**（SQLite 下是 63 passed + 1 skipped：行锁那条在 PG 下不再跳过） |
+| 行锁断言 | 真实执行并**通过**：持锁期间另一事务 `nowait=True` 被拒 |
 | `manage.py migrate` | 全部 OK（含 `inventory.0001_initial`、`stats.0001_initial`） |
-| `pytest` | **61 passed**（5.40s，当时的用例数；现为 63 项） |
 | `manage.py check` | 0 issues |
 | `makemigrations --check --dry-run` | No changes detected |
 
@@ -259,11 +261,49 @@ pytest tests/test_row_lock.py -v
 docker rm -f dbops-pg
 ```
 
+**没有 Docker 也能验**：EnterpriseDB 提供免安装的 PostgreSQL 二进制包，不需要装系统服务、不需要管理员权限。Windows 上的完整步骤（本机就是这样跑通 64 项全绿的）：
+
+```bash
+# 1) 下载并解压（约 340 MB）
+curl -sL -o pg16.zip \
+  https://get.enterprisedb.com/postgresql/postgresql-16.4-1-windows-x64-binaries.zip
+# 解压后二进制在 pgsql/bin/ 下
+
+# 2) 初始化数据目录（trust 认证，免密；--no-locale 避开 Windows locale 问题）
+initdb.exe -D <data> -U postgres -E UTF8 --no-locale --auth=trust
+
+# 3) 启动，端口随便挑一个不冲突的
+pg_ctl.exe -D <data> -l pg.log \
+  -o "-p 55432 -c listen_addresses=127.0.0.1 -c max_connections=10 \
+      -c shared_buffers=16MB -c autovacuum=off" start
+
+# 4) 切过去跑测试
+export DATABASE_URL=postgres://postgres@127.0.0.1:55432/dbops
+pytest -v
+
+# 5) 用完停掉、删掉目录即可，不留任何系统级改动
+pg_ctl.exe -D <data> stop
+```
+
 CI 的双数据库矩阵会自动覆盖这两格：SQLite 格跑出 1 skipped，PostgreSQL 格跑满全部断言。
 
 **同一类差异还有一处，已修掉**：批量任务按 `password_rotated_at` 升序挑实例（NULL = 从未轮换，最该先处理），而 **NULL 的默认排序在两种库上相反**——PostgreSQL 是 NULLS LAST，SQLite 是 NULLS FIRST。不显式声明的话，同一份代码在两种库上会挑出不同的实例，只在实例数超过 `ROTATION_BATCH_SIZE`、批次被截断时才暴露。现在显式写成 `F("password_rotated_at").asc(nulls_first=True)`（`apps/inventory/tasks.py`），并由 `test_never_rotated_instance_is_processed_first` 锁住。两种后端编译出的 SQL 均已确认带 `NULLS FIRST`。
 
-> 过程中的两个坑（与项目实现无关，但值得记录）：① 临时用的 PG 构建**不带时区数据**（`share/postgresql/timezone` 缺失），会让 Django 连接时的 `set_config('TimeZone','UTC')` 抛 `invalid value for parameter "TimeZone"`，补上 tzdata 即恢复；官方 `postgres:16` 镜像自带 tzdata，CI 不会遇到。② Windows 上 PostgreSQL 拒绝以管理员令牌运行，需降权启动。
+**真机跑 PostgreSQL 才暴露的一个测试缺陷（已修）**：`test_select_for_update_sql_matches_backend_capability` 原本没有 `django_db` 标记，在 SQLite 下一直是绿的，换到 PostgreSQL 立刻变红：
+
+```
+RuntimeError: Database access not allowed, use the "django_db" mark
+    self.connection.get_autocommit()        # ← as_sql() 在这里真的去连库了
+    sql = str(DBInstance.objects.select_for_update().query)
+```
+
+原因是：PostgreSQL 下把 QuerySet 编译成 SQL 时，要先问一次 `get_autocommit()` 才能决定加不加 `FOR UPDATE`，这一步会**真的建立数据库连接**；而 SQLite 没有行锁、直接跳过这个分支，永远走不到连库那一步。**这条测试此前"通过"，只是因为它在 SQLite 上根本没执行到需要连库的代码**——典型的"断言本身没被真正验证过"。补上 `@pytest.mark.django_db` 后两个库都绿。
+
+> 环境层面的坑（与项目实现无关，但值得记录）：
+> ① 临时用的 PG 构建**不带时区数据**（`share/postgresql/timezone` 缺失），会让 Django 连接时的 `set_config('TimeZone','UTC')` 抛 `invalid value for parameter "TimeZone"`，补上 tzdata 即恢复；官方 `postgres:16` 镜像自带 tzdata，CI 不会遇到。
+> ② Windows 上 PostgreSQL 拒绝以管理员令牌运行，需降权启动。
+> ③ Windows 上这个实例会在**空闲一段时间后自行崩溃**：`server process was terminated by exception 0xC0000142`（DLL 初始化失败，典型成因是桌面堆耗尽）。根治要改注册表 `SharedSection` 并重启，没有管理员权限时只能缓解——调低 `max_connections` / `shared_buffers`、关掉 autovacuum，并且**启动后立刻跑测试**，别放着空转（实测空转约 30 分钟必崩，连着跑测试则一直稳）。
+> ④ 没有 Docker 又装不上 Docker 时（家庭版无 Hyper-V、winget 源损坏、非管理员），EnterpriseDB 的免安装二进制包是可行的替代路径，见上面那组命令。
 
 ---
 
@@ -326,7 +366,7 @@ dbops/
 │       ├── models.py             # InstanceStat（唯一约束）
 │       ├── tasks.py              # 聚合 + upsert
 │       └── serializers.py / views.py / urls.py / admin.py
-├── tests/                        # 63 项测试（按考点分文件，含 test_row_lock.py）
+├── tests/                        # 64 项测试（按考点分文件，含 test_row_lock.py）
 ├── docker-compose.yml            # 5 个服务（web / worker / beat / db / redis）
 ├── .github/workflows/ci.yml      # ruff + check + migrations + 双数据库 pytest
 ├── Dockerfile / requirements*.txt / pytest.ini / pyproject.toml

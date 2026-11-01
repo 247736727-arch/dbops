@@ -16,8 +16,15 @@ from django.db.utils import OperationalError
 from apps.inventory.models import Cluster, DBInstance
 
 
+@pytest.mark.django_db
 def test_select_for_update_sql_matches_backend_capability():
-    """同一段 ORM 在两种库上生成的 SQL 并不一样，这是后面所有差异的根源。"""
+    """同一段 ORM 在两种库上生成的 SQL 并不一样，这是后面所有差异的根源。
+
+    必须标 django_db：PostgreSQL 下 as_sql() 要先问 get_autocommit() 才能决定
+    加不加 FOR UPDATE，这一步会真的建立连接；SQLite 没有行锁、直接跳过这段逻辑，
+    所以在 SQLite 上不标这个 mark 也照样是绿的——这就是它曾长期只在 SQLite 下
+    被验证、一上 postgres 就红的原因。
+    """
     sql = str(DBInstance.objects.select_for_update().query)
 
     if connection.vendor == "postgresql":
