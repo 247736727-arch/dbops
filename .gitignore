@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Pytest_cache/
+.pytest_cache/
+.ruff_cache/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 环境变量与密钥（绝不能入库）
+.env
+*.pem
+*.key
+
+# 本地数据库
+db.sqlite3
+db.sqlite3-journal
+
+# 构建产物
+staticfiles/
+media/
+celerybeat-schedule*
+celerybeat-schedule.db
+*.log
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
