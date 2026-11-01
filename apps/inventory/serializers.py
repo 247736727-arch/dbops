@@ -1,9 +1,8 @@
-"""第 1/2 题的序列化层。
+"""序列化层。
 
-安全红线：**密码只进不出**。
-- `password` 是 write_only，创建/更新时可以传，任何响应里都不会出现；
-- 列表里只回 `has_password` 和 `masked_password`（脱敏），
-  需要真实明文必须走单独的 `credential` 接口（管理员权限 + 审计）。
+密码只进不出：`password` 是 write_only，创建/更新时可传，任何响应里都不会出现；
+列表只回 `has_password` 与 `masked_password`（脱敏），要拿明文必须走 `credential`
+接口（管理员权限 + 审计日志）。
 """
 
 from __future__ import annotations

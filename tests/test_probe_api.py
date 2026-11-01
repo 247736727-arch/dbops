@@ -1,4 +1,4 @@
-"""第 2 题：CRUD 接口 + TCP 探测接口测试（网络层用 mock，不依赖真实网络）。"""
+"""CRUD 接口 + TCP 探测接口测试（网络层用 mock，不依赖真实网络）。"""
 
 from __future__ import annotations
 

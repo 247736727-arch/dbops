@@ -1,4 +1,4 @@
-"""第 1/2 题：三层模型的 CRUD + 主动探测接口。"""
+"""三层模型的 CRUD 接口，以及探测 / 凭据 / 轮换等动作接口。"""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ class DBInstanceViewSet(viewsets.ModelViewSet):
         # 列表页会用到 cluster.name / department.name，必须 select_related 防 N+1
         return DBInstance.objects.select_related("cluster", "cluster__department")
 
-    # ------------------------------------------------------------ 第 2 题
+    # ---------------------------------------------------------------- 探测
     @action(detail=True, methods=["post"], url_path="probe")
     def probe(self, request, pk=None):
         """探测该实例的 TCP 端口是否可达，并把结果写入探测记录表。"""
@@ -95,7 +95,7 @@ class DBInstanceViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
 
-    # ------------------------------------------------------------ 第 3 题
+    # ------------------------------------------------------------ 密码轮换
     @action(detail=True, methods=["post"], url_path="rotate-password")
     def rotate_password(self, request, pk=None):
         """手动触发单个实例的密码轮换（演示/应急用，默认强制）。"""
@@ -126,8 +126,8 @@ class DBInstanceViewSet(viewsets.ModelViewSet):
     def credential(self, request, pk=None):
         """取用明文凭据：仅管理员可用。
 
-        真实系统里这一步应该再加审批流 + 操作审计 + 短期有效令牌，
-        这里仅做权限收敛，并把访问行为写入日志，避免"谁都能拿到生产库密码"。
+        真实系统还应加审批流 + 操作审计 + 短期有效令牌；这里只做权限收敛，
+        并把访问行为写进日志，避免谁都能拿到生产库密码。
         """
         instance = self.get_object()
         logger.warning(

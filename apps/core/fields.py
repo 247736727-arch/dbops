@@ -8,16 +8,11 @@ from apps.core.crypto import decrypt, encrypt
 
 
 class EncryptedTextField(models.TextField):
-    """可逆加密的文本字段。
+    """可逆加密的文本字段：落库前加密（get_prep_value），读出后解密（from_db_value）。
 
-    - 落库前加密（get_prep_value），读出后解密（from_db_value）
-    - 用 TextField 而不是 CharField：Fernet 密文长度约为明文的 1.4 倍 + 定长开销，
-      CharField 的 max_length 很容易不够而导致截断/报错
-    - 注意：**不能用该字段做过滤/排序**，因为 Fernet 每次加密都带随机 IV，
-      同一明文两次加密结果不同；按密文查询永远匹配不到。
-
-    用法：
-        password = EncryptedTextField(blank=True, default="")
+    用 TextField 而非 CharField：Fernet 密文约为明文的 1.4 倍 + 定长开销，
+    CharField 的 max_length 很容易不够而导致截断。
+    不能用于过滤/排序：Fernet 每次加密带随机 IV，同一明文两次加密结果不同，按密文查永远匹配不到。
     """
 
     description = "Fernet 加密存储的文本"

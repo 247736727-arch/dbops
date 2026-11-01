@@ -1,8 +1,7 @@
-"""第 2 题补充：OpenAPI Schema 与 Swagger 文档端点可达性。
+"""OpenAPI Schema 与 Swagger 文档端点可达性。
 
-这两个端点最容易在改造 urls.py / serializers.py 之后悄悄坏掉
-（比如某个 Serializer 的 source 写错会直接导致 schema 生成 500），
-但普通 CRUD 测试覆盖不到，所以单独加一条兜底断言。
+改 urls.py / serializers.py 后这两个端点最容易悄悄坏掉（Serializer 的 source
+写错会直接让 schema 生成 500），而普通 CRUD 测试覆盖不到，故单独加兜底断言。
 """
 
 from __future__ import annotations

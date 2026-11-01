@@ -1,4 +1,4 @@
-"""第 4 题：统计结果的查询接口（只读）+ 手动触发入口。"""
+"""统计结果的只读查询接口 + 手动触发入口。"""
 
 from __future__ import annotations
 
@@ -40,8 +40,8 @@ class InstanceStatViewSet(viewsets.ReadOnlyModelViewSet):
     def collect(self, request):
         """手动触发一次统计（等价于 beat 在 00:00 做的事，方便验收/补跑）。
 
-        这里同步调用而非 .delay()：调用方需要立刻拿到统计结果用于确认，
-        且统计本身是毫秒级操作。大规模场景下应改为投递到队列并返回 task_id。
+        同步调用而非 .delay()：调用方要立刻拿到结果确认，且统计是毫秒级操作；
+        规模变大后应改为投递队列并返回 task_id。
         """
         stat_date = request.data.get("stat_date")
         result = collect_daily_instance_stats(stat_date)

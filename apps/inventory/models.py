@@ -1,23 +1,15 @@
-"""第 1 题：数据库实例管理系统的三层模型。
-
-关系设计（以及为什么这样定）：
+"""三层资产模型：部门 ⊃ 集群 ⊃ 数据库实例，外加探测记录与密码轮换记录。
 
     Department 1 ── n Cluster 1 ── n DBInstance
-                                    │
-                                    └── n ProbeLog / PasswordRotationLog
+                                    ├── n ProbeLog            (CASCADE)
+                                    └── n PasswordRotationLog (CASCADE)
 
-- **部门-集群 用一对多，不用多对多**
-  一个集群在组织结构上只有一个归属部门。若做成 M2M，第 4 题「按部门和集群维度
-  统计实例数量」会出现同一实例被多个部门重复计数的问题，口径不再唯一。
-
-- **外键 on_delete 按语义分开设置，不无脑 CASCADE**
-  * Cluster.department = PROTECT：部门下还有集群时禁止删除，否则统计维度出现悬空；
-  * DBInstance.cluster = PROTECT：实例是真实资产，不能被集群删除连带抹掉；
-  * ProbeLog.instance = CASCADE：探测记录是附属数据，随实例一起清理。
-
-- **实例按 host:port 唯一**
-  一个数据库实例在网络上的唯一标识就是 host + port，加唯一约束能从源头挡住
-  重复录入（这类 CMDB 最常见的脏数据）。
+- 部门-集群 用一对多：一个集群只归属一个部门。若做 M2M，「按部门 × 集群统计实例
+  数量」会把同一实例重复计到多个部门，统计口径不再唯一。
+- on_delete 按语义区分：Cluster.department / DBInstance.cluster 用 PROTECT
+  （部门下仍有集群时禁删；实例是真实资产，不因删集群被连带抹掉）；
+  两张记录表用 CASCADE（附属数据随实例清理）。
+- 实例按 host:port 唯一：这是它在网络上的唯一身份，能从源头挡住重复录入。
 """
 
 from __future__ import annotations
@@ -131,8 +123,7 @@ class DBInstance(TimeStampedModel):
     status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.RUNNING)
     remark = models.TextField("备注", blank=True, default="")
 
-    # ---- 敏感字段（第 3 题）----
-    # 落库即密文；`password` 在 Python 侧永远是明文，加密由 EncryptedTextField 负责
+    # 敏感字段：库里只有密文，Python 侧读写都是明文（加解密由 EncryptedTextField 负责）
     password = EncryptedTextField("账号密码（加密存储）", blank=True, default="")
     password_rotated_at = models.DateTimeField("密码最近轮换时间", null=True, blank=True, db_index=True)
     # 双密码过渡期：轮换后旧密码仍保留一段时间，避免应用侧连接瞬间全部失败
@@ -156,7 +147,7 @@ class DBInstance(TimeStampedModel):
     def __str__(self) -> str:
         return f"{self.name}@{self.host}:{self.port}"
 
-    # --------------------------------------------------------------- helpers
+    # ------------------------------------------------------------------ helpers
     @property
     def has_password(self) -> bool:
         return bool(self.password)
@@ -174,8 +165,7 @@ class DBInstance(TimeStampedModel):
     ) -> None:
         """设置新密码，并（可选）把旧密码挪到过渡位。
 
-        注意：这里是**唯一**推荐修改密码的入口，避免业务代码某处直接给
-        `password` 赋值却忘了更新 `password_rotated_at`。
+        改密码统一走这里，避免业务代码直接给 `password` 赋值却漏掉 `password_rotated_at`。
         """
         if keep_previous and self.password:
             grace = grace_hours if grace_hours is not None else settings.PREVIOUS_PASSWORD_GRACE_HOURS
@@ -192,11 +182,10 @@ class DBInstance(TimeStampedModel):
 
 
 class ProbeLog(models.Model):
-    """第 2 题：每次 TCP 探测的留痕。
+    """每次 TCP 探测的留痕。
 
-    保留历史而不是只更新实例上的一个字段，原因有二：
-    - 排障时需要看「什么时间点开始不可达」，单值字段会被覆盖；
-    - 后续接入告警/可用性报表时可以直接复用这张表。
+    保留历史而不是在实例上盖一个字段：排障要看「什么时间开始不可达」，
+    单值字段会被覆盖；后续接告警 / 可用性报表也能直接复用这张表。
     """
 
     class Reason(models.TextChoices):
@@ -228,7 +217,7 @@ class ProbeLog(models.Model):
 
 
 class PasswordRotationLog(models.Model):
-    """第 3 题：密码轮换审计。敏感操作必须可追溯「谁在什么时候改了什么」。"""
+    """密码轮换审计：敏感操作必须可追溯「谁在什么时候改了什么」。"""
 
     class Trigger(models.TextChoices):
         BEAT = "beat", "定时任务"

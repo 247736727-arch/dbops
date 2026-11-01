@@ -1,15 +1,11 @@
-"""敏感字段的可逆加密工具。
+"""敏感字段的可逆加密（Fernet = AES-128-CBC + HMAC-SHA256，自带完整性校验）。
 
-为什么不用 `django.contrib.auth.hashers.make_password`？
-    口令哈希（pbkdf2 / bcrypt / argon2）是**单向**的，只能验证、无法取回。
-    而数据库实例密码属于「业务密文」——系统在轮换、下发、排障时需要把它还原成
-    明文再去连库，因此必须使用**可逆**的对称加密（这里用 Fernet：
-    AES-128-CBC + HMAC-SHA256，带完整性校验，能发现密文被篡改）。
+为什么不用 `make_password`：口令哈希（pbkdf2/bcrypt/argon2）是单向的，只能验证、
+无法取回。实例密码属于「业务密文」，轮换、下发、排障时都要还原成明文去连库，
+所以必须可逆。
 
-密钥管理：
-    FIELD_ENCRYPTION_KEYS 支持逗号分隔的多把密钥，第一把用于加密，其余仅用于解密。
-    轮换密钥时把新密钥放最前面、旧的留在后面，历史数据仍可读出，等全量重新加密后
-    再移除旧密钥即可。
+FIELD_ENCRYPTION_KEYS 支持逗号分隔多把密钥：第一把用于加密，其余仅用于解密。
+换密钥时把新的放最前、旧的留后面，历史密文仍可读，等全量重加密后再移除旧密钥。
 """
 
 from __future__ import annotations
@@ -31,10 +27,9 @@ class SecretDecryptionError(RuntimeError):
 
 
 def _derive_key_from_secret_key(secret: str) -> str:
-    """开发环境兜底：从 SECRET_KEY 派生一把稳定的 Fernet 密钥。
+    """DEBUG 下兜底：由 SECRET_KEY 派生一把稳定密钥，让本地开箱即跑。
 
-    仅用于开箱即跑（DEBUG=True）。生产必须显式配置 FIELD_ENCRYPTION_KEYS，
-    否则一旦 SECRET_KEY 变更，所有历史密文都会解不开。
+    生产必须显式配置 FIELD_ENCRYPTION_KEYS —— 换一次 SECRET_KEY，历史密文就全解不开。
     """
     digest = hashlib.sha256(f"fernet:{secret}".encode()).digest()
     return base64.urlsafe_b64encode(digest).decode()

@@ -1,4 +1,4 @@
-"""第 5 题：请求耗时中间件——重点验证异常路径同样被统计、以及高风险路径被跳过。"""
+"""请求耗时中间件测试——重点验证异常路径同样被统计、噪声路径被跳过。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,7 @@ TIMING_LOGGER = logging.getLogger("request.timing")
 def logged_timings(monkeypatch):
     """接管 request.timing 的 info 调用，代替真实日志作为断言对象。
 
-    注意这里替换的是 logger 的方法而不是 pandas/caplog——因为该 logger 配置了
-    propagate=False，caplog 抓不到它。
+    这里替换 logger 方法而不用 caplog——该 logger 配了 propagate=False，caplog 抓不到。
     """
     records: list[dict] = []
 

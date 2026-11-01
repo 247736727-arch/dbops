@@ -1,16 +1,10 @@
-"""第 4 题：每日统计结果的存储模型。
+"""每日统计结果的存储模型。
 
-两个关键设计：
-
-- **唯一约束 (stat_date, department, cluster)**
-  定时任务一定会遇到重试、补跑、人工手动触发。没有唯一键的话，
-  同一天的数据会被写多份，报表直接翻倍——这是这类「统计入库」题最常见的坑。
-  有了唯一键，配合 update_or_create / bulk_create(update_conflicts=True)
-  就天然幂等。
-
-- **外键用 PROTECT 而不是 CASCADE**
-  统计数据是历史快照，不能因为某个集群被删除就让它消失；
-  删集群前必须先归档统计（这正是 PROTECT 的语义）。
+- **唯一约束 (stat_date, department, cluster)**：定时任务一定会遇到重试、补跑、
+  人工触发。没有唯一键，同一天会被写多份、报表直接翻倍；有了唯一键，配合
+  `bulk_create(update_conflicts=True)` 就天然幂等。
+- **外键用 PROTECT 而非 CASCADE**：统计数据是历史快照，不能因为删了集群就消失；
+  删集群前必须先归档统计。
 """
 
 from __future__ import annotations

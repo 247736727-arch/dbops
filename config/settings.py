@@ -1,11 +1,9 @@
-"""
-Django settings —— 数据库实例管理系统（笔试方案 A）
+"""Django settings —— 数据库实例管理系统。
 
-设计要点（对应 5 个考点）：
-1. 多表模型：apps.inventory 下的 Department / Cluster / DBInstance / ProbeLog
-2. 敏感字段加密：FIELD_ENCRYPTION_KEYS 走环境变量，见 apps/core/crypto.py
-3. 周期任务：CELERY_BEAT_SCHEDULE（12h 轮换、每日 00:00 统计）+ CELERY_TIMEZONE
-4. 中间件：apps.core.middleware.RequestTimingMiddleware
+- 多表模型：apps.inventory（Department / Cluster / DBInstance / ProbeLog）
+- 敏感字段加密：FIELD_ENCRYPTION_KEYS 走环境变量，见 apps/core/crypto.py
+- 周期任务：CELERY_BEAT_SCHEDULE（12h 轮换、每日 00:00 统计）+ CELERY_TIMEZONE
+- 中间件：apps.core.middleware.RequestTimingMiddleware
 """
 
 from pathlib import Path
@@ -104,7 +102,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # --------------------------------------------------------------- i18n / 时区
 LANGUAGE_CODE = "zh-hans"
 
-# 时区是本题的隐藏考点：定时任务 00:00 必须是「北京时间 00:00」
+# 定时任务 00:00 必须是「北京时间 00:00」，不是 UTC 00:00
 TIME_ZONE = "Asia/Shanghai"
 USE_I18N = True
 USE_TZ = True
@@ -136,7 +134,7 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "DBOps API",
-    "DESCRIPTION": "企业内数据库实例管理系统（Django 笔试题 · 方案 A）",
+    "DESCRIPTION": "企业内数据库实例管理系统（方案 A：数据库实例）",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
@@ -149,7 +147,7 @@ FIELD_ENCRYPTION_KEYS = env.list("FIELD_ENCRYPTION_KEYS", default=[])
 # 端口探测超时秒数：不设置超时会导致 worker 线程被不可达目标长期占用
 PROBE_TIMEOUT_SECONDS = env.float("PROBE_TIMEOUT_SECONDS", default=3.0)
 
-# 密码轮换周期（小时），题目要求 12 小时
+# 密码轮换周期（小时）
 PASSWORD_ROTATION_INTERVAL_HOURS = env.int("PASSWORD_ROTATION_INTERVAL_HOURS", default=12)
 # 旧密码保留窗口：轮换后新旧密码并行一段时间，避免应用侧连接瞬间全部失败
 PREVIOUS_PASSWORD_GRACE_HOURS = env.int("PREVIOUS_PASSWORD_GRACE_HOURS", default=24)
@@ -183,12 +181,8 @@ CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=CELERY_BROKER_URL)
 
 # 必须与 Django 时区一致，否则 crontab(hour=0) 会跑在 UTC 00:00（北京时间 08:00）。
-#
-# 关于下面这行的疑问：CELERY_ENABLE_UTC=True 会不会覆盖掉上面的时区？
-# 读 celery/app/base.py 可知，enable_utc 只在「没有显式设置 timezone」时才作为兜底；
-# 这里已经显式给了 Asia/Shanghai，所以 crontab 判定走的仍是北京时间。
-# 实测确认：app.timezone == crontab.tz == Asia/Shanghai，
-# 且 daily cron hour=0 触发在 Asia/Shanghai 00:00、12h 轮换落在 12:00。
+# CELERY_ENABLE_UTC 不会覆盖它：enable_utc 只在「没显式设置 timezone」时才兜底
+# （见 celery/app/base.py）。实测 hour=0 落在北京时间 00:00、*/12 落在 12:00。
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
 
@@ -200,13 +194,13 @@ CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=600)
 CELERY_TASK_ACKS_LATE = True
 
 CELERY_BEAT_SCHEDULE = {
-    # 第 3 题：每 12 小时随机轮换所有实例密码
+    # 每 12 小时随机轮换所有实例密码
     "rotate-instance-passwords": {
         "task": "apps.inventory.tasks.rotate_all_instance_passwords",
         "schedule": crontab(minute=0, hour="*/12"),
         "options": {"expires": 3600},
     },
-    # 第 4 题：每天 00:00（Asia/Shanghai）按部门 × 集群统计实例数量
+    # 每天 00:00（Asia/Shanghai）按部门 × 集群统计实例数量
     "daily-instance-statistics": {
         "task": "apps.stats.tasks.collect_daily_instance_stats",
         "schedule": crontab(minute=0, hour=0),
